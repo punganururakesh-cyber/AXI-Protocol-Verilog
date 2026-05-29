@@ -1,0 +1,168 @@
+timescale 1ns / 1ps
+
+module axi_tb;
+
+    // ---- Clock & Reset ----
+    reg  ACLK;
+    reg  ARESETn;
+
+    // ---- Master User Interface ----
+    reg         start_write;
+    reg         start_read;
+    reg  [31:0] addr_in;
+    reg  [31:0] data_in;
+    wire [31:0] data_out;
+    wire        done;
+
+    // ---- AXI Bus Wires ----
+    wire [31:0] AWADDR;
+    wire        AWVALID, AWREADY;
+
+    wire [31:0] WDATA;
+    wire [3:0]  WSTRB;
+    wire        WVALID, WREADY;
+
+    wire [1:0]  BRESP;
+    wire        BVALID, BREADY;
+
+    wire [31:0] ARADDR;
+    wire        ARVALID, ARREADY;
+
+    wire [31:0] RDATA;
+    wire [1:0]  RRESP;
+    wire        RVALID, RREADY;
+
+    // ---- DUT Instantiation ----
+    axi_master u_master (
+        .ACLK       (ACLK),    .ARESETn    (ARESETn),
+        .AWADDR     (AWADDR),  .AWVALID    (AWVALID),  .AWREADY (AWREADY),
+        .WDATA      (WDATA),   .WSTRB      (WSTRB),    .WVALID  (WVALID),  .WREADY (WREADY),
+        .BRESP      (BRESP),   .BVALID     (BVALID),   .BREADY  (BREADY),
+        .ARADDR     (ARADDR),  .ARVALID    (ARVALID),  .ARREADY (ARREADY),
+        .RDATA      (RDATA),   .RRESP      (RRESP),    .RVALID  (RVALID),  .RREADY (RREADY),
+        .start_write(start_write), .start_read(start_read),
+        .addr_in    (addr_in), .data_in    (data_in),
+        .data_out   (data_out),.done       (done)
+    );
+
+    axi_slave u_slave (
+        .ACLK    (ACLK),    .ARESETn (ARESETn),
+        .AWADDR  (AWADDR),  .AWVALID (AWVALID),  .AWREADY (AWREADY),
+        .WDATA   (WDATA),   .WSTRB   (WSTRB),    .WVALID  (WVALID),  .WREADY (WREADY),
+        .BRESP   (BRESP),   .BVALID  (BVALID),   .BREADY  (BREADY),
+        .ARADDR  (ARADDR),  .ARVALID (ARVALID),  .ARREADY (ARREADY),
+        .RDATA   (RDATA),   .RRESP   (RRESP),    .RVALID  (RVALID),  .RREADY (RREADY)
+    );
+
+    // ---- Clock Generation: 10 ns period ----
+    initial ACLK = 0;
+    always #5 ACLK = ~ACLK;
+
+    // ---- Task: Perform Write ----
+    task do_write;
+        input [31:0] addr;
+        input [31:0] data;
+        begin
+            @(posedge ACLK);
+            addr_in     <= addr;
+            data_in     <= data;
+            start_write <= 1;
+            @(posedge ACLK);
+            start_write <= 0;
+            wait (done == 1);
+            @(posedge ACLK);
+        end
+    endtask
+
+    // ---- Task: Perform Read ----
+    task do_read;
+        input [31:0] addr;
+        begin
+            @(posedge ACLK);
+            addr_in    <= addr;
+            start_read <= 1;
+            @(posedge ACLK);
+            start_read <= 0;
+            wait (done == 1);
+            @(posedge ACLK);
+        end
+    endtask
+
+    // ---- Test Procedure ----
+    integer pass_count, fail_count;
+
+    initial begin
+        // Initialise
+        pass_count  = 0; fail_count = 0;
+        start_write = 0; start_read = 0;
+        addr_in     = 0; data_in    = 0;
+
+        // Reset
+        ARESETn = 0;
+        repeat(4) @(posedge ACLK);
+        ARESETn = 1;
+        repeat(2) @(posedge ACLK);
+
+        $display("==============================================");
+        $display(" AXI4-Lite Master-Slave Testbench");
+        $display(" Vasavi College of Engineering, Hyderabad");
+        $display("==============================================");
+
+        // ------ TEST 1: Single Write ------
+        $display("\n[TEST 1] Write 0xDEADBEEF to address 0x00000004");
+        do_write(32'h0000_0004, 32'hDEAD_BEEF);
+        $display("  Write transaction complete.");
+        pass_count = pass_count + 1;
+
+        // ------ TEST 2: Read back & verify ------
+        $display("\n[TEST 2] Read back from address 0x00000004");
+        do_read(32'h0000_0004);
+        if (data_out === 32'hDEAD_BEEF) begin
+            $display("  READ DATA = 0x%08X  --> PASS", data_out);
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  READ DATA = 0x%08X  --> FAIL (expected 0xDEADBEEF)", data_out);
+            fail_count = fail_count + 1;
+        end
+
+        // ------ TEST 3: Multiple write-read ------
+        $display("\n[TEST 3] Multiple Write-Read Transactions");
+        begin : multi_test
+            integer idx;
+            reg [31:0] exp_data [0:3];
+            exp_data[0] = 32'hA5A5_A5A5;
+            exp_data[1] = 32'h1234_5678;
+            exp_data[2] = 32'hFFFF_0000;
+            exp_data[3] = 32'hCAFE_BABE;
+
+            for (idx = 0; idx < 4; idx = idx + 1) begin
+                do_write(idx * 4, exp_data[idx]);
+                do_read (idx * 4);
+                if (data_out === exp_data[idx]) begin
+                    $display("  Addr=0x%02X  Wrote=0x%08X  Read=0x%08X  --> PASS",
+                              idx*4, exp_data[idx], data_out);
+                    pass_count = pass_count + 1;
+                end else begin
+                    $display("  Addr=0x%02X  Wrote=0x%08X  Read=0x%08X  --> FAIL",
+                              idx*4, exp_data[idx], data_out);
+                    fail_count = fail_count + 1;
+                end
+            end
+        end
+
+        // ------ Summary ------
+        $display("\n==============================================");
+        $display(" RESULTS: %0d PASSED | %0d FAILED", pass_count, fail_count);
+        $display("==============================================\n");
+
+        $finish;
+    end
+
+    // ---- Timeout watchdog ----
+    initial begin
+        #100000;
+        $display("TIMEOUT: Simulation exceeded limit.");
+        $finish;
+    end
+
+endmodule
